@@ -1,0 +1,7 @@
+build:
+  roots:
+    - api
+lint:
+  service_suffix: Service
+  use:
+    - DEFAULT

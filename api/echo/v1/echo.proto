@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package echo.v1;
+
+option go_package = "pkg/echo_v1;echo";
+
+import "echo/v1/messages/messages.proto";
+
+service EchoService {
+    rpc Echo(messages.EchoRequest) returns (messages.EchoResponse);
+}

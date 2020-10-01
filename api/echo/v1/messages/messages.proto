@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package echo.v1.messages;
+
+option go_package = "pkg/echo_v1/messages;echo_messages";
+
+message EchoRequest {
+    string msg = 1;
+}
+
+message EchoResponse {
+    string msg = 1;
+}
