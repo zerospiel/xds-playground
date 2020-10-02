@@ -16,11 +16,13 @@ import (
 )
 
 var (
-	host string
+	host    string
+	connCnt int
 )
 
 func init() {
 	flag.StringVar(&host, "host", "", "host to send request to in form of [sheme://][authority/]hostname[:port]")
+	flag.IntVar(&connCnt, "conns", 3, "how many connections (actually clients) to create")
 }
 
 func main() {
@@ -30,17 +32,17 @@ func main() {
 		os.Exit(128)
 	}
 
-	conn, err := grpc.Dial(host, grpc.WithInsecure())
-	if err != nil {
-		log.Fatalf("failed dial '%s': %s\n", host, err.Error())
-	}
-	defer conn.Close()
+	for i := 0; i < connCnt; i++ {
+		conn, err := grpc.Dial(host, grpc.WithInsecure())
+		if err != nil {
+			log.Fatalf("failed dial '%s': %s\n", host, err.Error())
+		}
+		defer conn.Close()
 
-	cl := echo.NewEchoServiceClient(conn)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		cl := echo.NewEchoServiceClient(conn)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	for i := 0; i < 3; i++ {
 		p := &peer.Peer{}
 		resp, err := cl.Echo(ctx, &echo_messages.EchoRequest{
 			Msg: "hello " + strconv.Itoa(i),

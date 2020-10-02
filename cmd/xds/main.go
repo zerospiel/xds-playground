@@ -9,18 +9,21 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
+	ep "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v2"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v2"
 	xds "github.com/envoyproxy/go-control-plane/pkg/server/v2"
+	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/wrappers"
-
-	ep "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	"google.golang.org/grpc"
 )
 
@@ -47,11 +50,15 @@ const (
 	someRouteConfigName = "some_svc_route_config_name"
 	someListenerName    = "warden.platform" // initial grpc service we trying to send request to via grpc conn
 	someEndpointAddress = "0.0.0.0"         // backend, grpc server we trying to send request to via lb
+
+	sleepTime = time.Second * 10
 )
 
 var (
 	mgmtPort, gtwPort int
 	upstreams         upstreamPorts
+
+	snapshotVersion uint32
 )
 
 func init() {
@@ -62,16 +69,34 @@ func init() {
 func main() {
 	flag.Parse()
 
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("got panic", r)
+			os.Exit(129)
+		}
+	}()
+
 	if len(upstreams) == 0 {
 		flag.Usage()
 		os.Exit(128)
 	}
 
+	signal := make(chan struct{})
+	cb := &callbacks{
+		signal:   signal,
+		fetches:  0,
+		requests: 0,
+	}
+
 	ctx := context.Background()
 	snapshotCache := cache.NewSnapshotCache(true, cache.IDHash{}, nil)
-	xdsServer := xds.NewServer(ctx, snapshotCache, nil)
+	xdsServer := xds.NewServer(ctx, snapshotCache, cb)
 
 	go runMgmtServer(ctx, xdsServer, mgmtPort)
+
+	<-signal
+
+	cb.Report()
 
 	nodeID := snapshotCache.GetStatusKeys()[0]
 	log.Println("got nodeID", nodeID)
@@ -163,6 +188,47 @@ func main() {
 			},
 		}
 
+		// lds
+		log.Printf("creating LISTENER %s\n", someListenerName)
+		httpConnRds := &hcm.HttpConnectionManager_Rds{
+			Rds: &hcm.Rds{
+				RouteConfigName: someRouteConfigName,
+				ConfigSource: &core.ConfigSource{
+					ConfigSourceSpecifier: &core.ConfigSource_Ads{
+						Ads: &core.AggregatedConfigSource{},
+					},
+				},
+			},
+		}
+
+		httpConnManager := &hcm.HttpConnectionManager{
+			CodecType:      hcm.HttpConnectionManager_AUTO,
+			RouteSpecifier: httpConnRds,
+		}
+
+		anyListener, err := ptypes.MarshalAny(httpConnManager)
+		if err != nil {
+			log.Fatalf("on marshal proto: %s\n", err.Error())
+		}
+
+		lst := []types.Resource{
+			&api.Listener{
+				Name: someListenerName,
+				ApiListener: &listener.ApiListener{
+					ApiListener: anyListener,
+				},
+			},
+		}
+
+		atomic.AddUint32(&snapshotVersion, 1)
+		log.Printf("creating snapshot with version %d\n", snapshotVersion)
+
+		ss := cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lst, nil, nil)
+		snapshotCache.SetSnapshot(nodeID, ss)
+
+		// just to keep snapshot alive
+		log.Println("sleeping ...", sleepTime)
+		time.Sleep(sleepTime)
 	}
 }
 
