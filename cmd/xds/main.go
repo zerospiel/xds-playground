@@ -51,12 +51,13 @@ const (
 	someListenerName    = "warden.platform" // initial grpc service we trying to send request to via grpc conn
 	someEndpointAddress = "0.0.0.0"         // backend, grpc server we trying to send request to via lb
 
-	sleepTime = time.Second * 10
+	sleepTime = time.Second * 3
 )
 
 var (
 	mgmtPort, gtwPort int
 	upstreams         upstreamPorts
+	live              time.Duration
 
 	snapshotVersion uint32
 )
@@ -64,6 +65,7 @@ var (
 func init() {
 	flag.IntVar(&mgmtPort, "port", 18000, "management server port")
 	flag.Var(&upstreams, "upstream_port", "list of upstream grpc servers ports, must be set at least one")
+	flag.DurationVar(&live, "uptime", time.Minute, "how much time keep xds server before terminating it")
 }
 
 func main() {
@@ -88,96 +90,108 @@ func main() {
 		requests: 0,
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+
 	snapshotCache := cache.NewSnapshotCache(true, cache.IDHash{}, nil)
 	xdsServer := xds.NewServer(ctx, snapshotCache, cb)
 
 	go runMgmtServer(ctx, xdsServer, mgmtPort)
 
 	<-signal
+	go func() {
+		<-time.After(live)
+		cancel()
+	}()
 
 	cb.Report()
 
 	nodeID := snapshotCache.GetStatusKeys()[0]
 	log.Println("got nodeID", nodeID)
 
-	for _, upstreamPort := range upstreams {
+	go func() {
+		var (
+			l = len(upstreams)
+			i int
+		)
+		for {
+			upstreamPort := upstreams[i%l] // emulate updating/adding endpoints for local :)
 
-		// eds
-		log.Printf("creating ENDPOINT for %s:%d\n", someEndpointAddress, upstreamPort)
-		hst := &core.Address{
-			Address: &core.Address_SocketAddress{
-				SocketAddress: &core.SocketAddress{
-					Address:  someEndpointAddress,
-					Protocol: core.SocketAddress_TCP,
-					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: uint32(upstreamPort),
+			// eds
+			log.Printf("creating ENDPOINT for %s:%d\n", someEndpointAddress, upstreamPort)
+			hst := &core.Address{
+				Address: &core.Address_SocketAddress{
+					SocketAddress: &core.SocketAddress{
+						Address:  someEndpointAddress,
+						Protocol: core.SocketAddress_TCP,
+						PortSpecifier: &core.SocketAddress_PortValue{
+							PortValue: uint32(upstreamPort),
+						},
 					},
 				},
-			},
-		}
+			}
 
-		eds := []types.Resource{
-			&api.ClusterLoadAssignment{
-				ClusterName: someClusterName,
-				Endpoints: []*ep.LocalityLbEndpoints{
-					{
-						Locality: &core.Locality{
-							Region: "my-region",
-							Zone:   "my-zone",
-						},
-						Priority:            0,
-						LoadBalancingWeight: &wrappers.UInt32Value{Value: uint32(1000)},
-						LbEndpoints: []*ep.LbEndpoint{
-							{
-								HostIdentifier: &ep.LbEndpoint_Endpoint{
-									Endpoint: &ep.Endpoint{
-										Address: hst,
+			eds := []types.Resource{
+				&api.ClusterLoadAssignment{
+					ClusterName: someClusterName,
+					Endpoints: []*ep.LocalityLbEndpoints{
+						{
+							Locality: &core.Locality{
+								Region: "my-region",
+								Zone:   "my-zone",
+							},
+							Priority:            0,
+							LoadBalancingWeight: &wrappers.UInt32Value{Value: uint32(1000)},
+							LbEndpoints: []*ep.LbEndpoint{
+								{
+									HostIdentifier: &ep.LbEndpoint_Endpoint{
+										Endpoint: &ep.Endpoint{
+											Address: hst,
+										},
 									},
+									HealthStatus: core.HealthStatus_HEALTHY,
 								},
-								HealthStatus: core.HealthStatus_HEALTHY,
 							},
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// cds
-		log.Printf("creating CLUSTER %s\n", someClusterName)
-		cds := []types.Resource{
-			&api.Cluster{
-				Name:     someClusterName,
-				LbPolicy: api.Cluster_ROUND_ROBIN,
-				ClusterDiscoveryType: &api.Cluster_Type{
-					Type: api.Cluster_EDS,
-				},
-				EdsClusterConfig: &api.Cluster_EdsClusterConfig{
-					EdsConfig: &core.ConfigSource{
-						ConfigSourceSpecifier: &core.ConfigSource_Ads{},
+			// cds
+			log.Printf("creating CLUSTER %s\n", someClusterName)
+			cds := []types.Resource{
+				&api.Cluster{
+					Name:     someClusterName,
+					LbPolicy: api.Cluster_ROUND_ROBIN,
+					ClusterDiscoveryType: &api.Cluster_Type{
+						Type: api.Cluster_EDS,
+					},
+					EdsClusterConfig: &api.Cluster_EdsClusterConfig{
+						EdsConfig: &core.ConfigSource{
+							ConfigSourceSpecifier: &core.ConfigSource_Ads{},
+						},
 					},
 				},
-			},
-		}
+			}
 
-		// rds
-		log.Printf("creating ROUTE %s\n", someRouteConfigName)
-		rds := []types.Resource{
-			&api.RouteConfiguration{
-				Name: someRouteConfigName,
-				VirtualHosts: []*route.VirtualHost{
-					{
-						Name:    someVHName,
-						Domains: []string{someListenerName},
-						Routes: []*route.Route{
-							{
-								Match: &route.RouteMatch{
-									PathSpecifier: &route.RouteMatch_Prefix{Prefix: ""},
-								},
-								Action: &route.Route_Route{
-									Route: &route.RouteAction{
-										ClusterSpecifier: &route.RouteAction_Cluster{
-											Cluster: someClusterName,
+			// rds
+			log.Printf("creating ROUTE %s\n", someRouteConfigName)
+			rds := []types.Resource{
+				&api.RouteConfiguration{
+					Name: someRouteConfigName,
+					VirtualHosts: []*route.VirtualHost{
+						{
+							Name:    someVHName,
+							Domains: []string{someListenerName},
+							Routes: []*route.Route{
+								{
+									Match: &route.RouteMatch{
+										PathSpecifier: &route.RouteMatch_Prefix{Prefix: ""},
+									},
+									Action: &route.Route_Route{
+										Route: &route.RouteAction{
+											ClusterSpecifier: &route.RouteAction_Cluster{
+												Cluster: someClusterName,
+											},
 										},
 									},
 								},
@@ -185,51 +199,53 @@ func main() {
 						},
 					},
 				},
-			},
-		}
+			}
 
-		// lds
-		log.Printf("creating LISTENER %s\n", someListenerName)
-		httpConnRds := &hcm.HttpConnectionManager_Rds{
-			Rds: &hcm.Rds{
-				RouteConfigName: someRouteConfigName,
-				ConfigSource: &core.ConfigSource{
-					ConfigSourceSpecifier: &core.ConfigSource_Ads{
-						Ads: &core.AggregatedConfigSource{},
+			// lds
+			log.Printf("creating LISTENER %s\n", someListenerName)
+			httpConnRds := &hcm.HttpConnectionManager_Rds{
+				Rds: &hcm.Rds{
+					RouteConfigName: someRouteConfigName,
+					ConfigSource: &core.ConfigSource{
+						ConfigSourceSpecifier: &core.ConfigSource_Ads{
+							Ads: &core.AggregatedConfigSource{},
+						},
 					},
 				},
-			},
-		}
+			}
 
-		httpConnManager := &hcm.HttpConnectionManager{
-			CodecType:      hcm.HttpConnectionManager_AUTO,
-			RouteSpecifier: httpConnRds,
-		}
+			httpConnManager := &hcm.HttpConnectionManager{
+				CodecType:      hcm.HttpConnectionManager_AUTO,
+				RouteSpecifier: httpConnRds,
+			}
 
-		anyListener, err := ptypes.MarshalAny(httpConnManager)
-		if err != nil {
-			log.Fatalf("on marshal proto: %s\n", err.Error())
-		}
+			anyListener, err := ptypes.MarshalAny(httpConnManager)
+			if err != nil {
+				log.Fatalf("on marshal proto: %s\n", err.Error())
+			}
 
-		lst := []types.Resource{
-			&api.Listener{
-				Name: someListenerName,
-				ApiListener: &listener.ApiListener{
-					ApiListener: anyListener,
+			lst := []types.Resource{
+				&api.Listener{
+					Name: someListenerName,
+					ApiListener: &listener.ApiListener{
+						ApiListener: anyListener,
+					},
 				},
-			},
+			}
+
+			atomic.AddUint32(&snapshotVersion, 1)
+			log.Printf("creating snapshot with version %d\n", snapshotVersion)
+
+			ss := cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lst, nil, nil)
+			snapshotCache.SetSnapshot(nodeID, ss)
+
+			i++
+			// just to keep snapshot alive
+			log.Println("sleeping ...", sleepTime)
+			time.Sleep(sleepTime)
 		}
-
-		atomic.AddUint32(&snapshotVersion, 1)
-		log.Printf("creating snapshot with version %d\n", snapshotVersion)
-
-		ss := cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lst, nil, nil)
-		snapshotCache.SetSnapshot(nodeID, ss)
-
-		// just to keep snapshot alive
-		log.Println("sleeping ...", sleepTime)
-		time.Sleep(sleepTime)
-	}
+	}()
+	<-ctx.Done()
 }
 
 func runMgmtServer(ctx context.Context, xdsServer xds.Server, port int) {
