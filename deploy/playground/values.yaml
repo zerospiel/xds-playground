@@ -1,0 +1,11 @@
+pullPolicy: Never
+
+# EnableServiceLinks indicates whether information about services should be injected into pod's environment variables, matching the syntax of Docker links.
+enableServiceLinks: false
+
+rel:
+  component: unknown
+  part_of: xds
+
+nodeSelector:
+  node-role.kubernetes.io/master: ""

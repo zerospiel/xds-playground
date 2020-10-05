@@ -1,0 +1,19 @@
+appName: backend
+image: backend
+tag: latest
+replicaCount: 3
+resources:
+  limits:
+    cpu: 50m
+    memory: 64Mi
+  requests:
+    cpu: 1m
+    memory: 32Mi
+
+service:
+  ports:
+    - name: grpc
+      port: 82
+
+rel:
+  component: backend
