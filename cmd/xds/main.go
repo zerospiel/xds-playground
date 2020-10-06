@@ -55,9 +55,9 @@ const (
 )
 
 var (
-	mgmtPort, gtwPort int
-	upstreams         upstreamPorts
-	live              time.Duration
+	mgmtPort  int
+	upstreams upstreamPorts
+	live      time.Duration
 
 	snapshotVersion uint32
 )
