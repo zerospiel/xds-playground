@@ -2,19 +2,28 @@ package main
 
 import (
 	"errors"
+	"fmt"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ep "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	core "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
 )
 
-// those are some hardcoded values
+// NOTE: funcs for getting DS resources may change signature to accept
+// cluster name, this will be useful when you have multiple
+// clusters and want to balance btwn them,
+// especially that it's already implemented since grpc-go 1.31.0
+
+// those are some HardCoded values
 // it won't be used in that way on production
 const (
 	clusterNameHC = "cluster_name"  // is it enough to be just k8s cluster name?
@@ -29,7 +38,7 @@ type (
 	}
 )
 
-func initSnapshot(epsInformer cache.SharedIndexInformer, services ...string) (xds_cache.Snapshot, error) {
+func initState(epsInformer cache.SharedIndexInformer, services ...string) (xds_cache.Snapshot, error) {
 	// current example has single service
 	svcSet := make(map[string]struct{}, len(services))
 	for _, svcName := range services {
@@ -72,10 +81,38 @@ func initSnapshot(epsInformer cache.SharedIndexInformer, services ...string) (xd
 // getLDS creates Listener resources.
 // LDS returns Listener resources.
 // Used basically as a convenient root for
-//  the gRPC client's configuration.
+// the gRPC client's configuration.
 // Points to the RouteConfiguration.
-func getLDS() []types.Resource {
-	return nil
+func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error) {
+	httpConnRds := &hcm.HttpConnectionManager_Rds{
+		Rds: &hcm.Rds{
+			RouteConfigName: svcRouteConfigName,
+			ConfigSource: &envoy_core.ConfigSource{
+				ConfigSourceSpecifier: &envoy_core.ConfigSource_Ads{
+					Ads: &envoy_core.AggregatedConfigSource{},
+				},
+			},
+		},
+	}
+
+	httpConnManager := &hcm.HttpConnectionManager{
+		CodecType:      hcm.HttpConnectionManager_AUTO,
+		RouteSpecifier: httpConnRds,
+	}
+
+	anyListener, err := ptypes.MarshalAny(httpConnManager)
+	if err != nil {
+		return nil, fmt.Errorf("failed marshal any proto: %w", err)
+	}
+
+	return []types.Resource{
+		&api.Listener{
+			Name: svcListenerName,
+			ApiListener: &listener.ApiListener{
+				ApiListener: anyListener,
+			},
+		},
+	}, nil
 }
 
 // getRDS creates RouteConfiguration resources.
