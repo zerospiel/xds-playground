@@ -13,6 +13,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+type eventType int
+
+const (
+	eventAdd eventType = iota
+	eventUpdate
+	eventDelete
+)
+
 type k8sInMemoryState struct {
 	snapshotCache xds_cache.SnapshotCache
 
@@ -61,4 +69,20 @@ func initInformers(cli kubernetes.Interface, rp time.Duration, stopC <-chan stru
 	}
 
 	return epsInformer, nil
+}
+
+func (c *k8sInMemoryState) onUpdate(oldObj, newObj interface{}) {
+	c.onEvent(oldObj, newObj, eventAdd)
+}
+
+func (c *k8sInMemoryState) onDelete(obj interface{}) {
+	c.onEvent(obj, nil, eventDelete)
+}
+
+func (c *k8sInMemoryState) onAdd(obj interface{}) {
+	c.onEvent(nil, obj, eventAdd)
+}
+
+func (c *k8sInMemoryState) onEvent(oldObj, newObj interface{}, eventType eventType) {
+
 }

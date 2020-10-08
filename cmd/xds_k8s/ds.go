@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
@@ -38,23 +39,17 @@ type (
 	}
 )
 
-func initState(epsInformer cache.SharedIndexInformer, services ...string) (xds_cache.Snapshot, error) {
-	// current example has single service
-	svcSet := make(map[string]struct{}, len(services))
-	for _, svcName := range services {
-		svcSet[svcName] = struct{}{}
-	}
-
+func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) error {
 	svc2Eps := make(map[string][]podEndpoint)
 
 	for _, obj := range epsInformer.GetStore().List() {
 		endpoint := obj.(*core.Endpoints)
 		if endpoint == nil {
-			return xds_cache.Snapshot{}, errors.New("endpoints object expected")
+			return errors.New("endpoints object expected")
 		}
 
 		epSvcName := endpoint.GetObjectMeta().GetName()
-		if _, ok := svcSet[epSvcName]; !ok {
+		if _, ok := svc2Eps[epSvcName]; ok {
 			continue
 		}
 
@@ -75,7 +70,52 @@ func initState(epsInformer cache.SharedIndexInformer, services ...string) (xds_c
 	// on update/add/delete update k8s endpoints state
 	// regenerate the whole snapshot again
 
-	return xds_cache.Snapshot{}, nil
+	c.svcState = svc2Eps
+	s, err := getSnapshot(c.svcState, map[string]string{
+		zoneNameHC: regionNameHC,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get snapshot: %w", err)
+	}
+	if err = c.snapshotCache.SetSnapshot("mesh", s); err != nil {
+		return fmt.Errorf("failed to set snapshot: %w", err)
+	}
+
+	epsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    nil,
+		UpdateFunc: nil,
+		DeleteFunc: nil,
+	})
+
+	return nil
+}
+
+func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string]string) (xds_cache.Snapshot, error) {
+	var (
+		eds, cds, rds, lds []types.Resource
+	)
+	for svc, eps := range svc2Eps {
+		eds = append(eds, getEDS(eps, localitiesZone2Reg)...)
+		cds = append(cds, getCDS()...)
+
+		svcRouteConfigName := svc + "-route-config"
+		svcListenerName := svc + "-listener"
+
+		rds = append(rds, getRDS(svcRouteConfigName, svc+"-vh", svcListenerName)...)
+		v, err := getLDS(svcRouteConfigName, svcListenerName)
+		if err != nil {
+			return xds_cache.Snapshot{}, fmt.Errorf("failed getting lds for '%s': %w", svc, err)
+		}
+		lds = append(lds, v...)
+	}
+
+	s := xds_cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lds, nil, nil)
+	if err := s.Consistent(); err != nil {
+		return xds_cache.Snapshot{}, fmt.Errorf("inconsistent snapshot version %d: %w", snapshotVersion, err)
+	}
+
+	atomic.AddUint64(&snapshotVersion, 1)
+	return s, nil
 }
 
 // getLDS creates Listener resources.
