@@ -3,23 +3,20 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	core "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 )
 
-type eventType int
-
-const (
-	eventAdd eventType = iota
-	eventUpdate
-	eventDelete
-)
+const meshNodeName = "mesh"
 
 type k8sInMemoryState struct {
 	snapshotCache xds_cache.SnapshotCache
@@ -72,17 +69,65 @@ func initInformers(cli kubernetes.Interface, rp time.Duration, stopC <-chan stru
 }
 
 func (c *k8sInMemoryState) onUpdate(oldObj, newObj interface{}) {
-	c.onEvent(oldObj, newObj, eventAdd)
+	c.onEventProcess(newObj, "update")
 }
 
 func (c *k8sInMemoryState) onDelete(obj interface{}) {
-	c.onEvent(obj, nil, eventDelete)
+	c.onEventProcess(obj, "delete")
 }
 
 func (c *k8sInMemoryState) onAdd(obj interface{}) {
-	c.onEvent(nil, obj, eventAdd)
+	c.onEventProcess(obj, "add")
 }
 
-func (c *k8sInMemoryState) onEvent(oldObj, newObj interface{}, eventType eventType) {
+func (c *k8sInMemoryState) onEventProcess(obj interface{}, eventType string) {
+	endpoints, ok := obj.(*core.Endpoints)
+	if !ok || endpoints == nil {
+		return
+	}
 
+	svcName, podEndpoints := endpoints.GetObjectMeta().GetName(), extractDataFromEndpoints(endpoints)
+
+	// sanity check
+	c.mu.RLock()
+	if _, ok := c.svcState[svcName]; !ok {
+		c.mu.RUnlock()
+		return
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	c.svcState[svcName] = podEndpoints
+	c.mu.Unlock()
+
+	// NOTE: in this method we can extract locality data from endpoint in some way
+	c.mu.RLock()
+	s, err := getSnapshot(c.svcState, map[string]string{
+		zoneNameHC: regionNameHC,
+	})
+	if err != nil {
+		c.mu.RUnlock()
+		log.Printf("failed to get snapshot in %s event: %s\n", eventType, err.Error())
+		return
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
+		log.Printf("failed to set snapshot in %s event: %s\n", eventType, err.Error())
+	}
+	atomic.AddUint64(&snapshotVersion, 1)
+}
+
+func extractDataFromEndpoints(endpoints *core.Endpoints) (podEndpoints []podEndpoint) {
+	for _, subset := range endpoints.Subsets {
+		for _, p := range subset.Ports {
+			for _, a := range subset.Addresses {
+				podEndpoints = append(podEndpoints, podEndpoint{port: p.Port, ip: a.IP})
+			}
+		}
+	}
+
+	return
 }

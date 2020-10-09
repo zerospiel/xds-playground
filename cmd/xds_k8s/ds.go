@@ -49,42 +49,29 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 		}
 
 		epSvcName := endpoint.GetObjectMeta().GetName()
-		if _, ok := svc2Eps[epSvcName]; ok {
+		if _, ok := svc2Eps[epSvcName]; ok || epSvcName != "backend" {
 			continue
 		}
 
-		var podEps []podEndpoint
-		for _, subset := range endpoint.Subsets {
-			for _, p := range subset.Ports {
-				for _, a := range subset.Addresses {
-					podEps = append(podEps, podEndpoint{port: p.Port, ip: a.IP})
-				}
-			}
-		}
-
-		svc2Eps[epSvcName] = podEps
+		svc2Eps[epSvcName] = extractDataFromEndpoints(endpoint)
 	}
 
-	// TODO: save initial k8s endpoints state
-	// generate initial snapshot
-	// on update/add/delete update k8s endpoints state
-	// regenerate the whole snapshot again
-
 	c.svcState = svc2Eps
+	fmt.Println(">>> svcState", svc2Eps)
 	s, err := getSnapshot(c.svcState, map[string]string{
 		zoneNameHC: regionNameHC,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to get snapshot: %w", err)
 	}
-	if err = c.snapshotCache.SetSnapshot("mesh", s); err != nil {
+	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
 		return fmt.Errorf("failed to set snapshot: %w", err)
 	}
 
 	epsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    nil,
-		UpdateFunc: nil,
-		DeleteFunc: nil,
+		AddFunc:    c.onAdd,
+		UpdateFunc: c.onUpdate,
+		DeleteFunc: c.onDelete,
 	})
 
 	return nil
@@ -108,6 +95,8 @@ func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string
 		}
 		lds = append(lds, v...)
 	}
+
+	fmt.Printf(">>> %+v\n\n%+v\n\n%+v\n\n%+v\n\n", eds, cds, rds, lds)
 
 	s := xds_cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lds, nil, nil)
 	if err := s.Consistent(); err != nil {

@@ -3,6 +3,8 @@ pb:
 	buf protoc --proto_path ./api/ --go_out=Mecho/v1/messages/messages.proto=github.com/zerospiel/xds-playground/pkg/echo_v1/messages:. api/echo/v1/messages/messages.proto api/echo/v1/echo.proto
 	buf protoc --proto_path ./api/ --go-grpc_out=Mecho/v1/messages/messages.proto=github.com/zerospiel/xds-playground/pkg/echo_v1/messages:. api/echo/v1/messages/messages.proto api/echo/v1/echo.proto
 
+### localhost related targets
+
 .PHONY: client
 client:
 	go run $(CURDIR)/cmd/client --host localhost:50051
@@ -24,18 +26,38 @@ client_xds:
 client_xds_debug:
 	GRPC_GO_LOG_VERBOSITY_LEVEL=99 GRPC_GO_LOG_SEVERITY_LEVEL=INFO GRPC_XDS_BOOTSTRAP=$(CURDIR)/cmd/client/xds_bootstrap.json go run $(CURDIR)/cmd/client --host xds:///warden.platform --reqs 10
 
-.PHONY: deploy
-deploy:
+### localhost related targets
+
+### kubernetes related targets
+
+.PHONY: .common_deploy
+.common_deploy:
+	GOOS=linux go build -o $(CURDIR)/cmd/$(dir)/$(deploy) $(CURDIR)/cmd/$(dir)
 	eval $$(minikube docker-env)
-	docker build -t backend:latest $(CURDIR)/cmd/server/
+	docker build -t $(deploy):latest $(CURDIR)/cmd/$(dir)
 	helm upgrade \
-		--install backend \
+		--install $(deploy) \
 		--atomic --debug --reset-values \
 		--timeout 10s \
 		--kube-context minikube \
 		--namespace default \
-		-f $(CURDIR)/deploy/playground/values_backend.yaml $(CURDIR)/deploy/playground/
+		-f $(CURDIR)/deploy/playground/values_$(deploy).yaml $(CURDIR)/deploy/playground/
+
+
+.PHONY: xds-server
+xds-server:
+	@$(MAKE) .common_deploy deploy=$@ dir=xds_k8s
+
+.PHONY: backend
+backend:
+	@$(MAKE) .common_deploy deploy=$@ dir=server
+
+.PHONY: deploy
+deploy: backend xds-server
 
 .PHONY: undeploy
 undeploy:
 	helm uninstall backend
+	helm uninstall xds-server
+
+### kubernetes related targets
