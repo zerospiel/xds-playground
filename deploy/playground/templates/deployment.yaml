@@ -48,11 +48,20 @@ spec:
         - name: {{.Values.appName }}
           image: {{ .Values.image }}:{{ .Values.tag }}
           imagePullPolicy: {{ .Values.pullPolicy }}
+          args:
+            {{ if .Values.client }}
+            - --host
+            - "xds://backend"
+            - --reqs
+            - -1
+            - --restdur
+            - 3s
+            {{ end }}
           ports:
-            {{- range .Values.service.ports }}
+            {{ range .Values.service.ports }}
             - name: {{ .name }}
               containerPort: {{ .port }}
               protocol: TCP
-            {{- end}}
+            {{ end }}
           resources:
 {{ toYaml .Values.resources | indent 12 }}

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package echo.v1.messages;
 
-option go_package = "pkg/echo_v1/messages;echo_messages";
+option go_package = "github.com/zerospiel/xds-playground/pkg/echo_v1/messages;echo_messages";
 
 message EchoRequest {
     string msg = 1;

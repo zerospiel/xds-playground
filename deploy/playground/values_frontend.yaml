@@ -1,0 +1,16 @@
+appName: frontend
+image: frontend
+tag: latest
+replicaCount: 2
+resources:
+  limits:
+    cpu: 50m
+    memory: 64Mi
+  requests:
+    cpu: 1m
+    memory: 32Mi
+
+rel:
+  component: frontend
+
+client: true

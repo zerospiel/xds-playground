@@ -17,3 +17,5 @@ service:
 
 rel:
   component: xds-server
+
+xds: true

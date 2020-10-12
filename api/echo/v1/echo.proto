@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package echo.v1;
 
-option go_package = "pkg/echo_v1;echo";
+option go_package = "github.com/zerospiel/xds-playground/pkg/echo_v1;echo";
 
 import "echo/v1/messages/messages.proto";
 

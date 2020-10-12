@@ -3,16 +3,19 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync/atomic"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	ep "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
+	api_listener "github.com/envoyproxy/go-control-plane/envoy/api/v2/listener"
 	route "github.com/envoyproxy/go-control-plane/envoy/api/v2/route"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/config/filter/network/http_connection_manager/v2"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	core "k8s.io/api/core/v1"
@@ -57,7 +60,6 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 	}
 
 	c.svcState = svc2Eps
-	fmt.Println(">>> svcState", svc2Eps)
 	s, err := getSnapshot(c.svcState, map[string]string{
 		zoneNameHC: regionNameHC,
 	})
@@ -96,9 +98,8 @@ func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string
 		lds = append(lds, v...)
 	}
 
-	fmt.Printf(">>> %+v\n\n%+v\n\n%+v\n\n%+v\n\n", eds, cds, rds, lds)
-
 	s := xds_cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lds, nil, nil)
+	log.Println("setting new snapshot", eds, cds, rds, lds)
 	if err := s.Consistent(); err != nil {
 		return xds_cache.Snapshot{}, fmt.Errorf("inconsistent snapshot version %d: %w", snapshotVersion, err)
 	}
@@ -140,6 +141,14 @@ func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error
 			ApiListener: &listener.ApiListener{
 				ApiListener: anyListener,
 			},
+			FilterChains: []*api_listener.FilterChain{{
+				Filters: []*api_listener.Filter{{
+					Name: wellknown.HTTPConnectionManager,
+					ConfigType: &api_listener.Filter_TypedConfig{
+						TypedConfig: anyListener,
+					},
+				}},
+			}},
 		},
 	}, nil
 }
