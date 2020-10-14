@@ -33,6 +33,8 @@ const (
 	clusterNameHC = "cluster_name"  // is it enough to be just k8s cluster name?
 	regionNameHC  = "tdb_hardcoded" // i don't know in which case it may be used tbh
 	zoneNameHC    = "dataline_dc"   // this is some datacenter name
+
+	serviceName = "backend" // some hardcoded svc name, for sake of productivity
 )
 
 type (
@@ -52,7 +54,7 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 		}
 
 		epSvcName := endpoint.GetObjectMeta().GetName()
-		if _, ok := svc2Eps[epSvcName]; ok || epSvcName != "backend" {
+		if _, ok := svc2Eps[epSvcName]; ok || epSvcName != serviceName {
 			continue
 		}
 

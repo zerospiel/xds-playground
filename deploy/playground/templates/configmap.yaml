@@ -1,7 +1,8 @@
+{{ if .Values.client }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: hello-client-config
+  name: client-config
 data:
   xds_bootstrap.json: |
     {
@@ -11,10 +12,11 @@ data:
         }
       ],
       "node": {
-        "id": "34F031EA-50B9-4B64-8E1E-54A4CBE13EA7",
+        "id": "mesh",
         "locality": {
           "zone": "dataline_dc",
           "region": "tdb_hardcoded"
         }
       }
     }
+{{ end }}

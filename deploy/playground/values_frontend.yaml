@@ -14,3 +14,11 @@ rel:
   component: frontend
 
 client: true
+
+args:
+  - --host
+  - "xds:///backend-listener"
+  - --reqs
+  - "-1"
+  - --restdur
+  - "3s"

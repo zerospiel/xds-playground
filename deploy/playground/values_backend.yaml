@@ -13,7 +13,11 @@ resources:
 service:
   ports:
     - name: grpc
-      port: 82
+      port: 55500
 
 rel:
   component: backend
+
+args:
+  - --port
+  - "55500"

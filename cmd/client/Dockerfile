@@ -1,5 +1,9 @@
 FROM golang:latest
 
-COPY backend /bin/backend-linux
+COPY frontend /bin/frontend-linux
 
-ENTRYPOINT [ "/bin/backend-linux" ]
+ENV GRPC_GO_LOG_VERBOSITY_LEVEL=99
+ENV GRPC_GO_LOG_SEVERITY_LEVEL=info
+ENV GRPC_XDS_BOOTSTRAP=/var/run/config/xds_bootstrap.json
+
+ENTRYPOINT [ "/bin/frontend-linux" ]

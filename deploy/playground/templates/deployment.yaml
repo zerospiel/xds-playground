@@ -49,19 +49,25 @@ spec:
           image: {{ .Values.image }}:{{ .Values.tag }}
           imagePullPolicy: {{ .Values.pullPolicy }}
           args:
-            {{ if .Values.client }}
-            - --host
-            - "xds://backend"
-            - --reqs
-            - -1
-            - --restdur
-            - 3s
-            {{ end }}
+{{ toYaml .Values.args | indent 12 }}
           ports:
+            {{ if not (empty .Values.service) }}
             {{ range .Values.service.ports }}
             - name: {{ .name }}
               containerPort: {{ .port }}
               protocol: TCP
             {{ end }}
+            {{ end }}
           resources:
 {{ toYaml .Values.resources | indent 12 }}
+          {{ if .Values.client }}
+          volumeMounts:
+            - mountPath: /var/run/config
+              name: client-config
+          {{ end }}
+      {{ if .Values.client }}
+      volumes:
+        - name: client-config
+          configMap:
+            name: client-config
+      {{ end }}

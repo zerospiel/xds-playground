@@ -57,11 +57,12 @@ frontend:
 	@$(MAKE) .common_deploy deploy=$@ dir=client
 
 .PHONY: deploy
-deploy: backend xds-server
+deploy: backend xds-server frontend
 
 .PHONY: undeploy
 undeploy:
-	helm uninstall backend
+	helm uninstall frontend
 	helm uninstall xds-server
+	helm uninstall backend
 
 ### kubernetes related targets
