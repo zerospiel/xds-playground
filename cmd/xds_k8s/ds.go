@@ -15,6 +15,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	resource "github.com/envoyproxy/go-control-plane/pkg/resource/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -62,21 +63,58 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 	}
 
 	c.svcState = svc2Eps
-	s, err := getSnapshot(c.svcState, map[string]string{
-		zoneNameHC: regionNameHC,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to get snapshot: %w", err)
+	// s, err := getSnapshot(c.svcState, map[string]string{
+	// 	zoneNameHC: regionNameHC,
+	// })
+	// if err != nil {
+	// 	return fmt.Errorf("failed to get snapshot: %w", err)
+	// }
+	// if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
+	// 	return fmt.Errorf("failed to set snapshot: %w", err)
+	// }
+
+	var (
+		eds, cds, rds, lds []types.Resource
+	)
+	for svc, eps := range svc2Eps {
+		eds = append(eds, getEDS(eps, map[string]string{zoneNameHC: regionNameHC})...)
+		cds = append(cds, getCDS()...)
+
+		svcRouteConfigName := svc + "-route-config"
+		svcListenerName := svc + "-listener"
+
+		rds = append(rds, getRDS(svcRouteConfigName, svc+"-vh", svcListenerName)...)
+		v, err := getLDS(svcRouteConfigName, svcListenerName)
+		if err != nil {
+			panic(fmt.Errorf("failed getting lds for '%s': %w", svc, err))
+		}
+		lds = append(lds, v...)
 	}
-	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
-		return fmt.Errorf("failed to set snapshot: %w", err)
+
+	// c.cacheEds = xds_cache.NewLinearCache(resource.EndpointType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: eds[0]}))
+	// c.cacheCds = xds_cache.NewLinearCache(resource.ClusterType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: cds[0]}))
+	// c.cacheRds = xds_cache.NewLinearCache(resource.RouteType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: rds[0]}))
+	// c.cacheLds = xds_cache.NewLinearCache(resource.ListenerType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: lds[0]}))
+	if len(svc2Eps) > 0 {
+		c.cacheAny = xds_cache.NewLinearCache(resource.AnyType, xds_cache.WithInitialResources(map[string]types.Resource{
+			"eds": eds[0],
+			"cds": cds[0],
+			"rds": rds[0],
+			"lds": lds[0],
+		}))
 	}
 
 	epsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.onAdd,
-		UpdateFunc: c.onUpdate,
-		DeleteFunc: c.onDelete,
+		AddFunc:    c.onAddC,
+		UpdateFunc: c.onUpdateC,
+		DeleteFunc: c.onDeleteC,
 	})
+
+	// epsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	// 	AddFunc:    c.onAdd,
+	// 	UpdateFunc: c.onUpdate,
+	// 	DeleteFunc: c.onDelete,
+	// })
 
 	return nil
 }
@@ -169,6 +207,7 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 				// matching based on path (prefix, full path and safe regex)
 				// and headers (check out route.HeaderMatcher)
 				PathSpecifier: &route.RouteMatch_Prefix{Prefix: ""},
+				// PathSpecifier: &route.RouteMatch_SafeRegex{},
 			},
 			Action: &route.Route_Route{Route: &route.RouteAction{
 				// singce grpc-go 1.31.0 supports weighted clusters

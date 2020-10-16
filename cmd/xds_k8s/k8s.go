@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
 	core "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -20,6 +21,11 @@ const meshNodeName = "mesh"
 
 type k8sInMemoryState struct {
 	snapshotCache xds_cache.SnapshotCache
+	cacheEds      *xds_cache.LinearCache
+	cacheCds      *xds_cache.LinearCache
+	cacheRds      *xds_cache.LinearCache
+	cacheLds      *xds_cache.LinearCache
+	cacheAny      *xds_cache.LinearCache
 
 	mu sync.RWMutex
 
@@ -78,6 +84,78 @@ func (c *k8sInMemoryState) onDelete(obj interface{}) {
 
 func (c *k8sInMemoryState) onAdd(obj interface{}) {
 	c.onEventProcess(obj, "add")
+}
+
+func (c *k8sInMemoryState) onUpdateC(oldObj, newObj interface{}) {
+	c.onEventProcess(newObj, "update")
+}
+
+func (c *k8sInMemoryState) onDeleteC(obj interface{}) {
+	c.onEventProcess(obj, "delete")
+}
+
+func (c *k8sInMemoryState) onAddC(obj interface{}) {
+	c.onEventProcess(obj, "add")
+}
+
+func (c *k8sInMemoryState) onEventProcessC(obj interface{}, eventType string) {
+	endpoints, ok := obj.(*core.Endpoints)
+	if !ok || endpoints == nil {
+		return
+	}
+
+	svcName, podEndpoints := endpoints.GetObjectMeta().GetName(), extractDataFromEndpoints(endpoints)
+
+	// sanity check
+	c.mu.RLock()
+	if _, ok := c.svcState[svcName]; !ok {
+		c.mu.RUnlock()
+		return
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	c.svcState[svcName] = podEndpoints
+	c.mu.Unlock()
+
+	// NOTE: in this method we can extract locality data from endpoint in some way
+	c.mu.RLock()
+	var (
+		eds, cds, rds, lds []types.Resource
+	)
+	for svc, eps := range c.svcState {
+		eds = append(eds, getEDS(eps, map[string]string{zoneNameHC: regionNameHC})...)
+		cds = append(cds, getCDS()...)
+
+		svcRouteConfigName := svc + "-route-config"
+		svcListenerName := svc + "-listener"
+
+		rds = append(rds, getRDS(svcRouteConfigName, svc+"-vh", svcListenerName)...)
+		v, err := getLDS(svcRouteConfigName, svcListenerName)
+		if err != nil {
+			c.mu.RUnlock()
+			log.Printf("failed to get snapshot in %s event: %s\n", eventType, err.Error())
+			return
+		}
+		lds = append(lds, v...)
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.cacheAny.UpdateResource("eds", eds[0]); err != nil {
+		log.Printf("failed to update EDS resource type in %s event: %s\n", eventType, err.Error())
+	}
+	if err := c.cacheAny.UpdateResource("cds", cds[0]); err != nil {
+		log.Printf("failed to update CDS resource type in %s event: %s\n", eventType, err.Error())
+	}
+	if err := c.cacheAny.UpdateResource("rds", rds[0]); err != nil {
+		log.Printf("failed to update RDS resource type in %s event: %s\n", eventType, err.Error())
+	}
+	if err := c.cacheAny.UpdateResource("lds", lds[0]); err != nil {
+		log.Printf("failed to update LDS resource type in %s event: %s\n", eventType, err.Error())
+	}
 }
 
 func (c *k8sInMemoryState) onEventProcess(obj interface{}, eventType string) {
