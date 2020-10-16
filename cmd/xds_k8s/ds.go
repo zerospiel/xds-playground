@@ -96,6 +96,7 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 	// c.cacheRds = xds_cache.NewLinearCache(resource.RouteType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: rds[0]}))
 	// c.cacheLds = xds_cache.NewLinearCache(resource.ListenerType, xds_cache.WithInitialResources(map[string]types.Resource{serviceName: lds[0]}))
 	if len(svc2Eps) > 0 {
+		log.Printf("setting new cache: %+v %+v %+v %+v\n", eds[0], cds[0], rds[0], lds[0])
 		c.cacheAny = xds_cache.NewLinearCache(resource.AnyType, xds_cache.WithInitialResources(map[string]types.Resource{
 			"eds": eds[0],
 			"cds": cds[0],
@@ -120,6 +121,7 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 }
 
 func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string]string) (xds_cache.Snapshot, error) {
+	return xds_cache.Snapshot{}, nil
 	var (
 		eds, cds, rds, lds []types.Resource
 	)

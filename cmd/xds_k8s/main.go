@@ -52,7 +52,7 @@ func main() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	xdsServer := xds.NewServer(ctx, kcluster.snapshotCache, &callbacks{
+	xdsServer := xds.NewServer(ctx, kcluster.cacheAny, &callbacks{
 		signal:   make(chan struct{}),
 		fetches:  0,
 		requests: 0,

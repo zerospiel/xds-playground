@@ -20,12 +20,12 @@ import (
 const meshNodeName = "mesh"
 
 type k8sInMemoryState struct {
-	snapshotCache xds_cache.SnapshotCache
-	cacheEds      *xds_cache.LinearCache
-	cacheCds      *xds_cache.LinearCache
-	cacheRds      *xds_cache.LinearCache
-	cacheLds      *xds_cache.LinearCache
-	cacheAny      *xds_cache.LinearCache
+	// snapshotCache xds_cache.SnapshotCache
+	// cacheEds      *xds_cache.LinearCache
+	// cacheCds      *xds_cache.LinearCache
+	// cacheRds      *xds_cache.LinearCache
+	// cacheLds      *xds_cache.LinearCache
+	cacheAny *xds_cache.LinearCache
 
 	mu sync.RWMutex
 
@@ -40,7 +40,7 @@ func newInMemoryState() *k8sInMemoryState {
 	return &k8sInMemoryState{
 		svcState: map[string][]podEndpoint{},
 		// TODO: implement logger / use zap.Logger
-		snapshotCache: xds_cache.NewSnapshotCache(true, xds_cache.IDHash{}, nil),
+		// snapshotCache: xds_cache.NewSnapshotCache(true, xds_cache.IDHash{}, nil),
 	}
 }
 
@@ -144,6 +144,8 @@ func (c *k8sInMemoryState) onEventProcessC(obj interface{}, eventType string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	log.Printf("updating cache: %+v %+v %+v %+v\n", eds[0], cds[0], rds[0], lds[0])
+
 	if err := c.cacheAny.UpdateResource("eds", eds[0]); err != nil {
 		log.Printf("failed to update EDS resource type in %s event: %s\n", eventType, err.Error())
 	}
@@ -159,6 +161,7 @@ func (c *k8sInMemoryState) onEventProcessC(obj interface{}, eventType string) {
 }
 
 func (c *k8sInMemoryState) onEventProcess(obj interface{}, eventType string) {
+	return
 	endpoints, ok := obj.(*core.Endpoints)
 	if !ok || endpoints == nil {
 		return
@@ -180,21 +183,21 @@ func (c *k8sInMemoryState) onEventProcess(obj interface{}, eventType string) {
 
 	// NOTE: in this method we can extract locality data from endpoint in some way
 	c.mu.RLock()
-	s, err := getSnapshot(c.svcState, map[string]string{
-		zoneNameHC: regionNameHC,
-	})
-	if err != nil {
-		c.mu.RUnlock()
-		log.Printf("failed to get snapshot in %s event: %s\n", eventType, err.Error())
-		return
-	}
+	// s, err := getSnapshot(c.svcState, map[string]string{
+	// 	zoneNameHC: regionNameHC,
+	// })
+	// if err != nil {
+	// 	c.mu.RUnlock()
+	// 	log.Printf("failed to get snapshot in %s event: %s\n", eventType, err.Error())
+	// 	return
+	// }
 	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
-		log.Printf("failed to set snapshot in %s event: %s\n", eventType, err.Error())
-	}
+	// if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
+	// 	log.Printf("failed to set snapshot in %s event: %s\n", eventType, err.Error())
+	// }
 	atomic.AddUint64(&snapshotVersion, 1)
 }
 
