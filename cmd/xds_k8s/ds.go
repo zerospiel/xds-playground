@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sync/atomic"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
 	envoy_core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
@@ -15,6 +14,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/golang/protobuf/ptypes"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -30,9 +30,8 @@ import (
 // those are some HardCoded values
 // it won't be used in that way on production
 const (
-	clusterNameHC = "cluster_name"  // is it enough to be just k8s cluster name?
-	regionNameHC  = "tdb_hardcoded" // i don't know in which case it may be used tbh
-	zoneNameHC    = "dataline_dc"   // this is some datacenter name
+	regionNameHC = "tdb_hardcoded" // i don't know in which case it may be used tbh
+	zoneNameHC   = "dataline_dc"   // this is some datacenter name
 
 	serviceName = "backend" // some hardcoded svc name, for sake of productivity
 )
@@ -62,15 +61,18 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 	}
 
 	c.svcState = svc2Eps
-	s, err := getSnapshot(c.svcState, map[string]string{
-		zoneNameHC: regionNameHC,
-	})
+
+	eds, cds, rds, lds, err := getResources(svc2Eps, map[string]string{zoneNameHC: regionNameHC})
 	if err != nil {
-		return fmt.Errorf("failed to get snapshot: %w", err)
+		panic(err)
 	}
-	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
-		return fmt.Errorf("failed to set snapshot: %w", err)
-	}
+
+	log.Printf("setting new caches:\nEDS: %+v\nCDS: %+v\nRDS: %+v\nLDS: %+v\n\n\n", eds, cds, rds, lds)
+
+	c.lcacheEds = xds_cache.NewLinearCache(resource.EndpointType, xds_cache.WithInitialResources(eds))
+	c.lcacheCds = xds_cache.NewLinearCache(resource.ClusterType, xds_cache.WithInitialResources(cds))
+	c.lcacheRds = xds_cache.NewLinearCache(resource.RouteType, xds_cache.WithInitialResources(rds))
+	c.lcacheLds = xds_cache.NewLinearCache(resource.ListenerType, xds_cache.WithInitialResources(lds))
 
 	epsInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.onAdd,
@@ -78,36 +80,50 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 		DeleteFunc: c.onDelete,
 	})
 
+	c.muxCache = &xds_cache.MuxCache{
+		Classify: func(request xds_cache.Request) string {
+			return request.TypeUrl
+		},
+		Caches: map[string]xds_cache.Cache{
+			resource.EndpointType: c.lcacheEds,
+			resource.ClusterType:  c.lcacheCds,
+			resource.RouteType:    c.lcacheRds,
+			resource.ListenerType: c.lcacheLds,
+		},
+	}
+
 	return nil
 }
 
-func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string]string) (xds_cache.Snapshot, error) {
-	var (
-		eds, cds, rds, lds []types.Resource
-	)
+// getResources returns resources map where keys represent
+// resource names to match appropriate resource type.
+// Error may be only if there was a problem with marshaling protobuf any value.
+func getResources(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string]string) (eds, cds, rds, lds map[string]types.Resource, err error) {
+	eds = map[string]types.Resource{}
+	cds = map[string]types.Resource{}
+	rds = map[string]types.Resource{}
+	lds = map[string]types.Resource{}
+
 	for svc, eps := range svc2Eps {
-		eds = append(eds, getEDS(eps, localitiesZone2Reg)...)
-		cds = append(cds, getCDS()...)
+		// uniq cluster name just to show case of usage init cache
+		someClusterName := "some-cluster-name-" + svc
+
+		eds[someClusterName] = getEDS(someClusterName, eps, localitiesZone2Reg)
+		cds[someClusterName] = getCDS(someClusterName)
 
 		svcRouteConfigName := svc + "-route-config"
-		svcListenerName := svc + "-listener"
+		svcListenerName := svc
 
-		rds = append(rds, getRDS(svcRouteConfigName, svc+"-vh", svcListenerName)...)
-		v, err := getLDS(svcRouteConfigName, svcListenerName)
-		if err != nil {
-			return xds_cache.Snapshot{}, fmt.Errorf("failed getting lds for '%s': %w", svc, err)
+		rds[svcRouteConfigName] = getRDS(someClusterName, svcRouteConfigName, svc+"-vh", svcListenerName)
+		v, lerr := getLDS(svcRouteConfigName, svcListenerName)
+		if lerr != nil {
+			err = fmt.Errorf("failed getting lds for '%s': %w", svc, lerr)
+			return
 		}
-		lds = append(lds, v...)
+		lds[svcListenerName] = v
 	}
 
-	s := xds_cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lds, nil, nil)
-	log.Println("setting new snapshot", eds, cds, rds, lds)
-	if err := s.Consistent(); err != nil {
-		return xds_cache.Snapshot{}, fmt.Errorf("inconsistent snapshot version %d: %w", snapshotVersion, err)
-	}
-
-	atomic.AddUint64(&snapshotVersion, 1)
-	return s, nil
+	return
 }
 
 // getLDS creates Listener resources.
@@ -115,7 +131,7 @@ func getSnapshot(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[string
 // Used basically as a convenient root for
 // the gRPC client's configuration.
 // Points to the RouteConfiguration.
-func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error) {
+func getLDS(svcRouteConfigName, svcListenerName string) (types.Resource, error) {
 	httpConnRds := &hcm.HttpConnectionManager_Rds{
 		Rds: &hcm.Rds{
 			RouteConfigName: svcRouteConfigName,
@@ -137,7 +153,7 @@ func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error
 		return nil, fmt.Errorf("failed marshal any proto: %w", err)
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.Listener{
 			Name: svcListenerName,
 			ApiListener: &listener.ApiListener{
@@ -151,15 +167,14 @@ func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error
 					},
 				}},
 			}},
-		},
-	}, nil
+		}), nil
 }
 
-// getRDS creates RouteConfiguration resources.
-// RDS returns RouteConfiguration resources.
+// getRDS creates RouteConfiguration resource.
+// RDS returns RouteConfiguration resource.
 // Provides data used to populate the gRPC service config.
 // Points to the Cluster.
-func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []types.Resource {
+func getRDS(clusterName string, svcRouteConfigName, svcVirtualHostName, svcListenerName string) types.Resource {
 	vhost := &route.VirtualHost{
 		Name:    svcVirtualHostName,
 		Domains: []string{svcListenerName},
@@ -169,6 +184,7 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 				// matching based on path (prefix, full path and safe regex)
 				// and headers (check out route.HeaderMatcher)
 				PathSpecifier: &route.RouteMatch_Prefix{Prefix: ""},
+				// PathSpecifier: &route.RouteMatch_SafeRegex{},
 			},
 			Action: &route.Route_Route{Route: &route.RouteAction{
 				// singce grpc-go 1.31.0 supports weighted clusters
@@ -177,7 +193,7 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 
 				// cluster example
 				// ClusterSpecifier: &route.RouteAction_Cluster{
-				// 	Cluster: clusterNameHC,
+				// 	Cluster: clusterName,
 				// }}},
 
 				// weighted cluster example
@@ -186,7 +202,7 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 						TotalWeight: &wrapperspb.UInt32Value{Value: uint32(100)}, // default value
 						Clusters: []*route.WeightedCluster_ClusterWeight{
 							{
-								Name:   clusterNameHC,
+								Name:   clusterName,
 								Weight: &wrapperspb.UInt32Value{Value: uint32(100)}, // since we have only one k8s cluster
 							},
 						},
@@ -195,22 +211,21 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 		}},
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.RouteConfiguration{
 			Name:         svcRouteConfigName,
 			VirtualHosts: []*route.VirtualHost{vhost},
-		},
-	}
+		})
 }
 
-// getCDS creates Cluster resources.
-// CDS returns Cluster resources. Configures things like
+// getCDS creates Cluster resource.
+// CDS returns Cluster resource. Configures things like
 // load balancing policy and load reporting.
 // Points to the ClusterLoadAssignment.
-func getCDS() []types.Resource {
-	return []types.Resource{
+func getCDS(clusterName string) types.Resource {
+	return types.Resource(
 		&api.Cluster{
-			Name:                 clusterNameHC,
+			Name:                 clusterName,
 			LbPolicy:             api.Cluster_ROUND_ROBIN,                  // as of grpc-go 1.32.x it's the only option
 			ClusterDiscoveryType: &api.Cluster_Type{Type: api.Cluster_EDS}, // points to EDS
 			EdsClusterConfig: &api.Cluster_EdsClusterConfig{
@@ -218,15 +233,14 @@ func getCDS() []types.Resource {
 					ConfigSourceSpecifier: &envoy_core.ConfigSource_Ads{}, // as of grpc-go 1.32.x it's the only option for DS config source
 				},
 			},
-		},
-	}
+		})
 }
 
-// getEDS creates ClusterLoadAssignment resources.
-// EDS returns ClusterLoadAssignment resources.
+// getEDS creates ClusterLoadAssignment resource.
+// EDS returns ClusterLoadAssignment resource.
 // Configures the set of endpoints (backend servers) to
 // load balance across and may tell the client to drop requests.
-func getEDS(endpoints []podEndpoint, localitiesZone2Reg map[string]string) []types.Resource {
+func getEDS(clusterName string, endpoints []podEndpoint, localitiesZone2Reg map[string]string) types.Resource {
 	var lbeps []*ep.LbEndpoint
 	for _, podEp := range endpoints {
 		hst := &envoy_core.Address{
@@ -266,10 +280,9 @@ func getEDS(endpoints []podEndpoint, localitiesZone2Reg map[string]string) []typ
 		})
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.ClusterLoadAssignment{
-			ClusterName: clusterNameHC,
+			ClusterName: clusterName,
 			Endpoints:   localityLbEps,
-		},
-	}
+		})
 }

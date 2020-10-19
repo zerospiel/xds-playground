@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	xds_cache "github.com/envoyproxy/go-control-plane/pkg/cache/v2"
 	core "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
@@ -16,10 +16,14 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-const meshNodeName = "mesh"
-
 type k8sInMemoryState struct {
-	snapshotCache xds_cache.SnapshotCache
+	// muxCache is a combinator for other resources caches
+	muxCache *xds_cache.MuxCache
+
+	lcacheEds *xds_cache.LinearCache
+	lcacheCds *xds_cache.LinearCache
+	lcacheRds *xds_cache.LinearCache
+	lcacheLds *xds_cache.LinearCache
 
 	mu sync.RWMutex
 
@@ -33,8 +37,6 @@ type k8sInMemoryState struct {
 func newInMemoryState() *k8sInMemoryState {
 	return &k8sInMemoryState{
 		svcState: map[string][]podEndpoint{},
-		// TODO: implement logger / use zap.Logger
-		snapshotCache: xds_cache.NewSnapshotCache(true, xds_cache.IDHash{}, nil),
 	}
 }
 
@@ -102,22 +104,47 @@ func (c *k8sInMemoryState) onEventProcess(obj interface{}, eventType string) {
 
 	// NOTE: in this method we can extract locality data from endpoint in some way
 	c.mu.RLock()
-	s, err := getSnapshot(c.svcState, map[string]string{
-		zoneNameHC: regionNameHC,
-	})
+	// TODO: here should be a separate method for incremental resources
+	// but envoy currently doesn't support incremental DS
+	eds, cds, rds, lds, err := getResources(c.svcState, map[string]string{zoneNameHC: regionNameHC})
 	if err != nil {
 		c.mu.RUnlock()
-		log.Printf("failed to get snapshot in %s event: %s\n", eventType, err.Error())
+		log.Println(err.Error())
 		return
 	}
 	c.mu.RUnlock()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err = c.snapshotCache.SetSnapshot(meshNodeName, s); err != nil {
-		log.Printf("failed to set snapshot in %s event: %s\n", eventType, err.Error())
+
+	log.Printf("updating caches:\nEDS: %+v\nCDS: %+v\nRDS: %+v\nLDS: %+v\n\n\n", eds, cds, rds, lds)
+
+	if err := updateResource(eds, c.lcacheEds); err != nil {
+		log.Printf("failed to update EDS resource type in %s event: %s\n", eventType, err.Error())
+		return
 	}
-	atomic.AddUint64(&snapshotVersion, 1)
+	if err := updateResource(cds, c.lcacheCds); err != nil {
+		log.Printf("failed to update CDS resource type in %s event: %s\n", eventType, err.Error())
+		return
+	}
+	if err := updateResource(rds, c.lcacheRds); err != nil {
+		log.Printf("failed to update RDS resource type in %s event: %s\n", eventType, err.Error())
+		return
+	}
+	if err := updateResource(lds, c.lcacheLds); err != nil {
+		log.Printf("failed to update LDS resource type in %s event: %s\n", eventType, err.Error())
+		return
+	}
+}
+
+func updateResource(resources map[string]types.Resource, cacheType *xds_cache.LinearCache) error {
+	for resourceName, resource := range resources {
+		if err := cacheType.UpdateResource(resourceName, resource); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func extractDataFromEndpoints(endpoints *core.Endpoints) (podEndpoints []podEndpoint) {

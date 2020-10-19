@@ -17,7 +17,7 @@ client: true
 
 args:
   - --host
-  - "xds:///backend-listener"
+  - "xds:///backend"
   - --reqs
   - "-1"
   - --restdur
