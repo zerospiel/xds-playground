@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	api "github.com/envoyproxy/go-control-plane/envoy/api/v2"
@@ -22,6 +21,7 @@ import (
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v2"
+	"github.com/envoyproxy/go-control-plane/pkg/resource/v2"
 	xds "github.com/envoyproxy/go-control-plane/pkg/server/v2"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"github.com/golang/protobuf/ptypes"
@@ -95,8 +95,25 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	snapshotCache := cache.NewSnapshotCache(true, cache.IDHash{}, nil)
-	xdsServer := xds.NewServer(ctx, snapshotCache, cb)
+	var (
+		ldsC = cache.NewLinearCache(resource.ListenerType)
+		rdsC = cache.NewLinearCache(resource.RouteType)
+		cdsC = cache.NewLinearCache(resource.ClusterType)
+		edsC = cache.NewLinearCache(resource.EndpointType)
+	)
+	muxCache := &cache.MuxCache{
+		// nolint: govet
+		Classify: func(request cache.Request) string {
+			return request.TypeUrl
+		},
+		Caches: map[string]cache.Cache{
+			resource.ListenerType: ldsC,
+			resource.RouteType:    rdsC,
+			resource.ClusterType:  cdsC,
+			resource.EndpointType: edsC,
+		},
+	}
+	xdsServer := xds.NewServer(ctx, muxCache, cb)
 
 	go runMgmtServer(ctx, xdsServer, mgmtPort)
 
@@ -108,8 +125,8 @@ func main() {
 
 	cb.Report()
 
-	nodeID := snapshotCache.GetStatusKeys()[0]
-	log.Println("got nodeID", nodeID)
+	// nodeID := snapshotCache.GetStatusKeys()[0]
+	// log.Println("got nodeID", nodeID)
 
 	go func() {
 		var (
@@ -133,19 +150,24 @@ func main() {
 
 			// lds
 			log.Printf("creating LISTENER %s\n", someListenerName)
-			lst, err := getLDS(someRouteConfigName, someListenerName)
+			lds, err := getLDS(someRouteConfigName, someListenerName)
 			if err != nil {
 				log.Fatalf("failed get LDS: %s\n", err.Error())
 			}
 
-			atomic.AddUint32(&snapshotVersion, 1)
-			log.Printf("creating snapshot with version %d\n", snapshotVersion)
-
-			ss := cache.NewSnapshot(fmt.Sprint(snapshotVersion), eds, cds, rds, lst, nil, nil)
-			if err = ss.Consistent(); err != nil {
-				log.Fatal(err)
+			if err = edsC.UpdateResource(someClusterName, eds); err != nil {
+				log.Println("updating eds", err.Error())
 			}
-			snapshotCache.SetSnapshot(nodeID, ss)
+			if err = cdsC.UpdateResource(someClusterName, cds); err != nil {
+				log.Println("updating cds", err.Error())
+			}
+			if err = rdsC.UpdateResource(someRouteConfigName, rds); err != nil {
+				log.Println("updating rds", err.Error())
+			}
+			if err = ldsC.UpdateResource(someListenerName, lds); err != nil {
+				log.Println("updating lds", err.Error())
+			}
+			log.Println("success updated all resources")
 
 			i++
 			// just to keep snapshot alive
@@ -196,12 +218,12 @@ func shutdown(server *grpc.Server) {
 	}
 }
 
-// getLDS creates Listener resources.
-// LDS returns Listener resources.
+// getLDS creates Listener resource.
+// LDS returns Listener resource.
 // Used basically as a convenient root for
 // the gRPC client's configuration.
 // Points to the RouteConfiguration.
-func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error) {
+func getLDS(svcRouteConfigName, svcListenerName string) (types.Resource, error) {
 	httpConnRds := &hcm.HttpConnectionManager_Rds{
 		Rds: &hcm.Rds{
 			RouteConfigName: svcRouteConfigName,
@@ -223,7 +245,7 @@ func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error
 		return nil, fmt.Errorf("failed marshal any proto: %w", err)
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.Listener{
 			Name: svcListenerName,
 			ApiListener: &listener.ApiListener{
@@ -241,15 +263,14 @@ func getLDS(svcRouteConfigName, svcListenerName string) ([]types.Resource, error
 					},
 				},
 			},
-		},
-	}, nil
+		}), nil
 }
 
-// getRDS creates RouteConfiguration resources.
-// RDS returns RouteConfiguration resources.
+// getRDS creates RouteConfiguration resource.
+// RDS returns RouteConfiguration resource.
 // Provides data used to populate the gRPC service config.
 // Points to the Cluster.
-func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []types.Resource {
+func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) types.Resource {
 	vhost := &route.VirtualHost{
 		Name:    svcVirtualHostName,
 		Domains: []string{svcListenerName},
@@ -266,20 +287,19 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) []ty
 		}},
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.RouteConfiguration{
 			Name:         svcRouteConfigName,
 			VirtualHosts: []*route.VirtualHost{vhost},
-		},
-	}
+		})
 }
 
-// getCDS creates Cluster resources.
-// CDS returns Cluster resources. Configures things like
+// getCDS creates Cluster resource.
+// CDS returns Cluster resource. Configures things like
 // load balancing policy and load reporting.
 // Points to the ClusterLoadAssignment.
-func getCDS() []types.Resource {
-	return []types.Resource{
+func getCDS() types.Resource {
+	return types.Resource(
 		&api.Cluster{
 			Name:                 someClusterName,
 			LbPolicy:             api.Cluster_ROUND_ROBIN,                  // as of grpc-go 1.32.x it's the only option
@@ -290,15 +310,14 @@ func getCDS() []types.Resource {
 					InitialFetchTimeout:   &durationpb.Duration{Seconds: 0, Nanos: 0},
 				},
 			},
-		},
-	}
+		})
 }
 
-// getEDS creates ClusterLoadAssignment resources.
-// EDS returns ClusterLoadAssignment resources.
+// getEDS creates ClusterLoadAssignment resource.
+// EDS returns ClusterLoadAssignment resource.
 // Configures the set of endpoints (backend servers) to
 // load balance across and may tell the client to drop requests.
-func getEDS(ip string, port uint32, localitiesZone2Reg map[string]string) []types.Resource {
+func getEDS(ip string, port uint32, localitiesZone2Reg map[string]string) types.Resource {
 	var lbeps []*ep.LbEndpoint
 	hst := &core.Address{
 		Address: &core.Address_SocketAddress{
@@ -336,10 +355,9 @@ func getEDS(ip string, port uint32, localitiesZone2Reg map[string]string) []type
 		})
 	}
 
-	return []types.Resource{
+	return types.Resource(
 		&api.ClusterLoadAssignment{
 			ClusterName: someClusterName,
 			Endpoints:   localityLbEps,
-		},
-	}
+		})
 }

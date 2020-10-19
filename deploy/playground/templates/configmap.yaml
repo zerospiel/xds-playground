@@ -12,7 +12,7 @@ data:
         }
       ],
       "node": {
-        "id": "mesh",
+        "id": "any_value_we_dont_evaluate_it",
         "locality": {
           "zone": "dataline_dc",
           "region": "tdb_hardcoded"
