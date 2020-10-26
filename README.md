@@ -59,7 +59,9 @@ $ kubectl logs -lapp=frontend # frontend with grpc debug level
 
 The main idea of these examples is to show a quick presentation of how to bake `grpc-go` with its `xds` resolver ([v1.32.0](https://github.com/grpc/grpc-go/releases/tag/v1.32.0) at this moment).
 
-Currently, [locality weight balancing](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/locality_weight) just doesn't work at all. And I don't know how to fix this issue.
+Currently, [locality weight balancing](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/locality_weight) just doesn't work at all.
+This is the predefined behavior mentioned in [the proposal][proposal-a27]:
+> Note that the EDS policy will support locality-level weights, but it will not support endpoint-level weights. Providing a mechanism for endpoint-level weighting will be addressed in future work.
 
 ## References
 
