@@ -1,7 +1,12 @@
 {
     "xds_servers": [
         {
-            "server_uri": "0.0.0.0:18000"
+            "server_uri": "0.0.0.0:18000",
+            "channel_creds": [
+                {
+                    "type": "insecure"
+                }
+            ]
         }
     ],
     "node": {

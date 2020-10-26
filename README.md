@@ -59,7 +59,7 @@ $ kubectl logs -lapp=frontend # frontend with grpc debug level
 
 The main idea of these examples is to show a quick presentation of how to bake `grpc-go` with its `xds` resolver ([v1.32.0](https://github.com/grpc/grpc-go/releases/tag/v1.32.0) at this moment).
 
-The next issue to solve is to implement a kind of [incremental xDS](https://www.envoyproxy.io/docs/envoy/latest/api-docs/xds_protocol#four-variants) (because I used to use `SotW` as I mentioned above), but I think it's beyond this playground.
+Currently, [locality weight balancing](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/locality_weight) just doesn't work at all. And I don't know how to fix this issue.
 
 ## References
 
