@@ -79,6 +79,7 @@ func (c *k8sInMemoryState) initState(epsInformer cache.SharedIndexInformer) erro
 	})
 
 	c.muxCache = &xds_cache.MuxCache{
+		// nolint: govet
 		Classify: func(request xds_cache.Request) string {
 			return request.TypeUrl
 		},
@@ -104,11 +105,11 @@ func getResources(svc2Eps map[string][]podEndpoint, localitiesZone2Reg map[strin
 
 	for svc, eps := range svc2Eps {
 		eds[svc] = getEDS(svc, eps, localitiesZone2Reg)
-		cds[zoneNameHC] = getCDS(svc)
+		cds[svc] = getCDS(svc, svc)
 
 		svcRouteConfigName := svc + "-route-config"
 
-		rds[svcRouteConfigName] = getRDS(svcRouteConfigName, svc+"-vh", svc)
+		rds[svcRouteConfigName] = getRDS(svc, svcRouteConfigName, svc+"-vh", svc)
 		v, lerr := getLDS(svcRouteConfigName, svc)
 		if lerr != nil {
 			err = fmt.Errorf("failed getting lds for '%s': %w", svc, lerr)
@@ -160,7 +161,7 @@ func getLDS(svcRouteConfigName, svcListenerName string) (types.Resource, error) 
 // RDS returns RouteConfiguration resource.
 // Provides data used to populate the gRPC service config.
 // Points to the Cluster.
-func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) types.Resource {
+func getRDS(clusterName, svcRouteConfigName, svcVirtualHostName, svcListenerName string) types.Resource {
 	vhost := &route.VirtualHost{
 		Name:    svcVirtualHostName,
 		Domains: []string{svcListenerName},
@@ -179,7 +180,7 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) type
 
 				// cluster example
 				// ClusterSpecifier: &route.RouteAction_Cluster{
-				// 	Cluster: zoneNameHC,
+				// 	Cluster: clusterName,
 				// }}},
 
 				// weighted cluster example
@@ -188,8 +189,8 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) type
 						TotalWeight: &wrapperspb.UInt32Value{Value: uint32(100)}, // default value
 						Clusters: []*route.WeightedCluster_ClusterWeight{
 							{
-								Name:   zoneNameHC,
-								Weight: &wrapperspb.UInt32Value{Value: uint32(100)}, // since we have only one k8s cluster
+								Name:   clusterName,
+								Weight: &wrapperspb.UInt32Value{Value: uint32(100)},
 							},
 						},
 					},
@@ -208,10 +209,10 @@ func getRDS(svcRouteConfigName, svcVirtualHostName, svcListenerName string) type
 // CDS returns Cluster resource. Configures things like
 // load balancing policy and load reporting.
 // Points to the ClusterLoadAssignment.
-func getCDS(serviceName string) types.Resource {
+func getCDS(clusterName, serviceName string) types.Resource {
 	return types.Resource(
 		&api.Cluster{
-			Name:                 zoneNameHC,
+			Name:                 clusterName,
 			LbPolicy:             api.Cluster_ROUND_ROBIN,                  // as of grpc-go 1.32.x it's the only option
 			ClusterDiscoveryType: &api.Cluster_Type{Type: api.Cluster_EDS}, // points to EDS
 			EdsClusterConfig: &api.Cluster_EdsClusterConfig{
